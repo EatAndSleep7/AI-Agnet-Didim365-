@@ -6,6 +6,10 @@ import httpx
 from elasticsearch import Elasticsearch
 from langchain.tools import tool
 from langchain_elasticsearch import ElasticsearchRetriever
+import urllib3
+
+# Elasticsearch SSL 인증서 무시 시 발생하는 경고문 숨김 처리
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ---------------------------------------------------------------------------
 # Elasticsearch 연결 설정
