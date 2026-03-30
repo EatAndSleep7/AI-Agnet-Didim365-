@@ -4,7 +4,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.api.routes.threads import threads_router
 from app.api.routes.chat import chat_router
+from app.api.routes.mock_db import mock_db_router
 from app.utils.logger import custom_logger
+from fastapi.responses import FileResponse
 
 app = FastAPI(
     title="Edu Agent Template",
@@ -27,6 +29,7 @@ app.add_middleware(
 # API 라우터 등록
 api_router.include_router(threads_router, tags=["threads"])
 api_router.include_router(chat_router, tags=["chat"])
+api_router.include_router(mock_db_router, prefix="/mock-db", tags=["mock-db"])
 
 app.include_router(api_router)
 
@@ -46,6 +49,11 @@ async def log_requests(request: Request, call_next):
     )
 
     return response
+
+
+@app.get("/banking_ui")
+async def serve_banking_ui():
+    return FileResponse("banking_ui.html")
 
 
 @app.get("/")

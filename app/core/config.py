@@ -1,6 +1,6 @@
 from typing import List
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 class OpikSettings(BaseSettings):
     """Opik configuration."""
@@ -10,6 +10,15 @@ class OpikSettings(BaseSettings):
     API_KEY: str | None = Field(default=None, description="opik cloud api key here")
     WORKSPACE: str | None = Field(default=None, description="your workspace name")
     PROJECT: str | None = Field(default=None, description="your project name")
+
+
+class ElasticsearchSettings(BaseModel):
+    URL: str = "https://elasticsearch-edu.didim365.app"
+    USER: str = "elastic"
+    PASSWORD: str = ""
+    INDEX: str = "bestbanker-2025"
+    CONTENT_FIELD: str = "text"
+    TOP_K: int = 5
 
 
 class Settings(BaseSettings):
@@ -23,13 +32,9 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str
     OPENAI_MODEL: str
     
-    # 기본 설정 (추가 환경변수가 필요하면 여기에 추가하세요)
-
-    # IMP: DeepAgents 라이브러리 실행 시 Graph 에이전트의 최대 재귀 호출 횟수(Recursion Limit) 설정
-    # DeepAgents 설정
-    DEEPAGENT_RECURSION_LIMIT: int = 20
-
+    # Opik 설정 (선택사항)
     OPIK: OpikSettings | None = None
+    ES: ElasticsearchSettings = ElasticsearchSettings()
     
     model_config = SettingsConfigDict(
         env_file=".env",
