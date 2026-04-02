@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import List
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import BaseModel, Field
@@ -26,6 +27,12 @@ class Settings(BaseSettings):
     API_V1_PREFIX: str
 
     CORS_ORIGINS: List[str] = ["*"]
+
+    # checkpoints DB 경로 (기본값: 프로젝트 data 디렉터리)
+    CHECKPOINTS_DB_PATH: str = str(Path(__file__).parent.parent / "data" / "checkpoints.db")
+
+    # LangGraph 재귀 한도 (기본 25는 멀티 에이전트에 부족할 수 있음)
+    GRAPH_RECURSION_LIMIT: int = 50
     
     # IMP: LangChain 객체 및 LLM 연동에 사용되는 필수 설정값(API Key 등)
     # LangChain 설정

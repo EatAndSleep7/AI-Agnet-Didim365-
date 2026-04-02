@@ -14,11 +14,14 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 # 가상 데이터 생성 (최초 1회)
 uv run python app/data/create_mock_data.py
 
-# 전체 테스트 실행
-uv run pytest
+# 전체 테스트 실행 (현재 35개 테스트)
+uv run pytest -v
+
+# 테스트 커버리지 리포트
+uv run pytest --cov=app tests/ --cov-report=term-missing
 
 # 특정 테스트 함수 실행
-uv run pytest tests/test_main.py::test_root_endpoint -v
+uv run pytest tests/test_mock_db.py::test_list_tables -v
 
 # Elasticsearch 연결 확인
 uv run python test_es.py
@@ -108,16 +111,41 @@ banking_agent (supervisor)
 
 ### 테스트
 
-`tests/test_main.py` — 루트/헬스 엔드포인트 기본 테스트. `tests/test_v8_scenarios.py`는 SQL 에이전트 기반 레거시 테스트이므로 현재 뱅킹 에이전트와 무관합니다.
+테스트 커버리지: **35개 테스트** (기존 2개 → 35개)
+
+| 파일 | 테스트 수 | 대상 |
+|---|---|---|
+| `test_main.py` | 2 | 루트/헬스 엔드포인트 |
+| `test_mock_db.py` | 8 | Mock DB API (SQL Injection 검증 포함) |
+| `test_tools.py` | 13 | 12개 도구 함수 (LLM 모킹 포함) |
+| `test_agent_service.py` | 7 | AgentService 스트리밍/에러 처리 |
+| `test_chat.py` | 5 | Chat 라우트 SSE 스트리밍 |
+
+**테스트 실행**:
+- `uv run pytest` — 전체 테스트
+- `uv run pytest tests/test_mock_db.py -v` — Mock DB 테스트만
+- `uv run pytest --cov=app tests/` — 커버리지 리포트
 
 ### Tools & 데이터
 
-- `app/agents/tools.py` — LangChain `@tool` 12개 정의 (DB 조회 + LLM 체인 + ES 검색)
-- `app/data/banking.db` — SQLite, 7개 테이블:
-  - `customer_basic`, `customer_profile`, `customer_consultation` — 고객 정보
-  - `best_banker_status`, `banker_score_config` — 직원 점수 및 상품 가점
-  - `best_banker_promotion`, `product_recommendation` — 추진 이력 및 추천 점수
-- `app/data/create_mock_data.py` — 가상 데이터 생성 (50명 고객, 20명 직원, 15개 상품)
+**도구 (app/agents/tools.py — 11개)**:
+| 도구명 | 사용 에이전트 | 역할 |
+|---|---|---|
+| `get_customer_raw_data` | customer, recommendation | 고객 3개 테이블 조회 |
+| `summarize_customer` | customer, recommendation | LLM 고객 특성 요약 (온도 0.3) |
+| `search_best_banker_regulations` | regulation, simulation | Elasticsearch BM25 규정 검색 |
+| `get_banker_dashboard` | dashboard, recommendation, simulation | 직원 4개 상품군 점수 조회 |
+| `get_group_statistics` | dashboard | 전체 직원 상품군별 TOP10/중앙값 |
+| `get_worst_group` | dashboard, recommendation | 직원 부족 상품군 도출 |
+| `get_top_product_for_customer` | recommendation | 고객 추천 점수 최고 상품 (category 파라미터 선택) |
+| `generate_marketing_message` | recommendation | LLM 마케팅 문구 생성 (온도 0.7) |
+| `get_promoted_customers` | recommendation | 직원 추진 고객 목록 |
+| `get_most_pushed_product_in_group` | recommendation | 추진 고객 중 카테고리별 최다 추천 상품 |
+| `get_product_info` | simulation | 상품명 검색 및 규정코드 반환 |
+
+**데이터**:
+- `app/data/banking.db` — SQLite, 7개 테이블 (50명 고객, 20명 직원, 15개 상품)
+- `app/data/create_mock_data.py` — 가상 데이터 생성 스크립트
 
 상품군 코드: `1=수신(예적금)`, `2=여신(대출)`, `3=전자금융`
 
@@ -154,16 +182,42 @@ LangGraph의 `AsyncSqliteSaver`를 사용하며 `checkpoints.db`에 저장됩니
 
 **필수값**:
 - `OPENAI_API_KEY`, `OPENAI_MODEL`, `API_V1_PREFIX`
-- `DEEPAGENT_RECURSION_LIMIT` (기본값 `20`) — LangGraph 최대 재귀 호출 횟수
 
 **Elasticsearch 설정** (`.env` 또는 `app/core/config.py` 기본값):
 - `ES__URL`: `https://elasticsearch-edu.didim365.app`
 - `ES__USER`: `elastic`
-- `ES__PASSWORD`: API 토큰
-- `ES__INDEX`: `bestbanker-2025` (베스트뱅커 규정 인덱스, 27개 문서) — `env.sample`의 `edu-collection`은 구버전 값
+- `ES__PASSWORD`: API 토큰 (기본값 없음, `.env`에 반드시 설정)
+- `ES__INDEX`: `bestbanker-2025` (베스트뱅커 규정 인덱스, 27개 문서)
 - `ES__CONTENT_FIELD`: `text`
 - `ES__TOP_K`: `5` (BM25 검색 결과 수)
 
 **Opik 설정** (선택사항):
 - `OPIK__URL_OVERRIDE`: Opik 서버 URL
 - `OPIK__PROJECT`: 프로젝트 이름
+
+## 최근 개선사항 (Phase 1-4)
+
+### Phase 1 — Critical Fixes
+- **파라미터 명칭 통일** (`prompts.py`): `product_group_code` → `category` (추천 에이전트 A-2, B 경로 기능 복구)
+- **SQL Injection 방어** (`mock_db.py`): f-string 식별자 → 인용 처리 `"{table_name}"`
+- **SSL 경고 범위 축소** (`tools.py`): 전역 비활성화 제거, ES 클라이언트 생성 시만 억제
+- **assert 교체** (`agent_service.py`): RuntimeError로 변경 (−O 플래그 환경 대응)
+- **checkpoints.db 경로 설정화** (`config.py`): `CHECKPOINTS_DB_PATH` 환경 변수화
+
+### Phase 2 — Code Quality
+- **에러 처리 통합**: `_build_error_response()` 헬퍼로 3곳 중복 제거
+- **JSON 직렬화**: f-string 방식 → `json.dumps(..., ensure_ascii=False)` 전환
+- **도구 리턴 포맷**: 모두 `{"found": bool, "message": ...}` 통일
+- **customer_ids 타입 가드** (`tools.py`): 단일 문자열 입력 자동 변환, 최대 500개 제한
+- **재귀 한도 설정화**: `GRAPH_RECURSION_LIMIT: int = 50` 추가
+
+### Phase 3 — Testing (35개 테스트)
+- Mock DB API, Tool 함수, AgentService 스트리밍, Chat 라우트 SSE 테스트
+- pytest 설정 추가: `asyncio_mode = "auto"`, `testpaths = ["tests"]`
+
+### Phase 4 — UX/Features
+- **직원 ID 새로고침 복원**: `sessionStorage.getItem('thread_emp_id')`
+- **SSE heartbeat**: 15초마다 `': heartbeat\n\n'` 전송 (프록시 타임아웃 방지)
+- **SSE malformed JSON 로깅**: `console.warn` 추가
+- **채팅 입력 제한**: `maxlength="4000"` + 글자 수 카운터
+- **다크모드 토글**: `localStorage` 저장/복원

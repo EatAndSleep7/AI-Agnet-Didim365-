@@ -1,5 +1,5 @@
-from typing import Dict, Optional
-from pydantic import BaseModel
+from typing import Optional
+from pydantic import BaseModel, ConfigDict
 from uuid import UUID
 
 
@@ -9,7 +9,10 @@ class ChatRequest(BaseModel):
 
 
 class ResponseMetadata(BaseModel):
-    pass
+    model_config = ConfigDict(extra="allow")
+
+    agent_name: Optional[str] = None
+    execution_time_ms: Optional[int] = None
 
 
 class ChatResponse(BaseModel):

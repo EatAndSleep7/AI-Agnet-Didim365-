@@ -61,13 +61,15 @@ class AgentService:
             return
         import aiosqlite
         from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-        conn = await aiosqlite.connect("checkpoints.db")
+        from app.core.config import settings
+        conn = await aiosqlite.connect(settings.CHECKPOINTS_DB_PATH)
         self.checkpointer = AsyncSqliteSaver(conn)
 
-    def _create_agent(self, thread_id: uuid.UUID = None):
+    def _create_agent(self):
         """뱅킹 멀티 에이전트 (슈퍼바이저 + 5개 서브 에이전트) 생성"""
         from app.agents.banking_agent import create_banking_agent
-        assert self.checkpointer is not None, "checkpointer가 초기화되지 않았습니다. _init_checkpointer를 먼저 호출하세요."
+        if self.checkpointer is None:
+            raise RuntimeError("checkpointer가 초기화되지 않았습니다. _init_checkpointer를 먼저 호출하세요.")
         self.agent = create_banking_agent(
             model=self.model,
             checkpointer=self.checkpointer,
@@ -79,6 +81,19 @@ class AgentService:
 
             self.agent = track_langgraph(self.agent, self.opik_tracer)
 
+    def _build_error_response(self, e: Exception, content: str) -> str:
+        """에러 응답 JSON 문자열 생성 (공통 패턴)"""
+        payload = {
+            "step": "done",
+            "message_id": str(uuid.uuid4()),
+            "role": "assistant",
+            "content": content,
+            "metadata": {},
+            "created_at": datetime.utcnow().isoformat(),
+            "error": str(e) if not isinstance(e, GraphRecursionError) else None,
+        }
+        return json.dumps(payload, ensure_ascii=False)
+
     # 실제 대화 로직
     @log_execution
     async def process_query(self, user_messages: str, thread_id: uuid.UUID):
@@ -87,7 +102,7 @@ class AgentService:
             # checkpointer 초기화 (SQLite 연결, 첫 호출 시만 실행)
             await self._init_checkpointer()
             # 에이전트 초기화 (한 번만)
-            self._create_agent(thread_id=thread_id)
+            self._create_agent()
 
             custom_logger.info(f"사용자 메시지: {user_messages}")
 
@@ -95,9 +110,13 @@ class AgentService:
             # 각 청크는 (namespace, update) 튜플:
             #   namespace == ()           → 외부 그래프 이벤트 (supervisor, 서브에이전트 완료)
             #   namespace != ()           → 서브에이전트 내부 이벤트 (model, tools 스텝)
+            from app.core.config import settings
             agent_stream = self.agent.astream(
                 {"messages": [HumanMessage(content=user_messages)]},
-                config={"configurable": {"thread_id": str(thread_id)}},
+                config={
+                    "configurable": {"thread_id": str(thread_id)},
+                    "recursion_limit": settings.GRAPH_RECURSION_LIMIT,
+                },
                 stream_mode="updates",
                 subgraphs=True,
             )
@@ -123,16 +142,7 @@ class AgentService:
                         import traceback
                         custom_logger.error(traceback.format_exc())
                         agent_task = None
-                        error_response = {
-                            "step": "done",
-                            "message_id": str(uuid.uuid4()),
-                            "role": "assistant",
-                            "content": "처리 중 오류가 발생했습니다. 다시 시도해주세요.",
-                            "metadata": {},
-                            "created_at": datetime.utcnow().isoformat(),
-                            "error": str(e)
-                        }
-                        yield json.dumps(error_response, ensure_ascii=False)
+                        yield self._build_error_response(e, "처리 중 오류가 발생했습니다. 다시 시도해주세요.")
                         break
 
                     # subgraphs=True → chunk = (namespace_tuple, update_dict)
@@ -147,7 +157,7 @@ class AgentService:
                             for step, event in update.items():
                                 if step == "supervisor":
                                     # 슈퍼바이저 라우팅 알림
-                                    yield f'{{"step": "model", "tool_calls": ["라우팅 중"]}}'
+                                    yield json.dumps({"step": "model", "tool_calls": ["라우팅 중"]}, ensure_ascii=False)
 
                                 elif step in _BANKING_SUB_AGENTS:
                                     # 서브 에이전트 완료 → 최종 AIMessage 추출 후 done 전송
@@ -166,14 +176,14 @@ class AgentService:
                                     final_message_id = str(uuid.uuid4())
 
                                     custom_logger.info(f"서브 에이전트 최종 응답: {final_content[:80]}")
-                                    yield (
-                                        f'{{"step": "done", '
-                                        f'"message_id": {json.dumps(final_message_id)}, '
-                                        f'"role": "assistant", '
-                                        f'"content": {json.dumps(final_content, ensure_ascii=False)}, '
-                                        f'"metadata": {json.dumps(self._handle_metadata(final_metadata), ensure_ascii=False)}, '
-                                        f'"created_at": "{datetime.utcnow().isoformat()}"}}'
-                                    )
+                                    yield json.dumps({
+                                        "step": "done",
+                                        "message_id": final_message_id,
+                                        "role": "assistant",
+                                        "content": final_content,
+                                        "metadata": self._handle_metadata(final_metadata),
+                                        "created_at": datetime.utcnow().isoformat(),
+                                    }, ensure_ascii=False)
 
                                 elif step == "tools":
                                     if not event:
@@ -182,10 +192,12 @@ class AgentService:
                                     if not messages:
                                         continue
                                     message = messages[0]
-                                    yield f'{{"step": "tools", "name": {json.dumps(message.name)}, "content": ""}}'
+                                    yield json.dumps({"step": "tools", "name": message.name, "content": ""}, ensure_ascii=False)
 
                         else:
                             # ── 서브 에이전트 내부 이벤트 (tool 호출 과정 표시) ──
+                            # namespace 마지막 요소에서 에이전트 이름 추출 (예: "regulation_agent:uuid" → "regulation_agent")
+                            agent_name = namespace[-1].split(":")[0] if namespace else ""
                             for step, event in update.items():
                                 if not event:
                                     continue
@@ -200,51 +212,36 @@ class AgentService:
                                         # 최종 텍스트 응답 — 외부 이벤트에서 done 처리하므로 스킵
                                         continue
                                     # tool 호출 중 알림
-                                    yield f'{{"step": "model", "tool_calls": {json.dumps([t["name"] for t in tool_calls])}}}'
+                                    yield json.dumps({
+                                        "step": "model",
+                                        "agent": agent_name,
+                                        "tool_calls": [t["name"] for t in tool_calls],
+                                    }, ensure_ascii=False)
 
                                 elif step == "tools":
                                     # tool 실행 결과 알림
                                     tool_name = getattr(message, "name", "")
-                                    yield f'{{"step": "tools", "name": {json.dumps(tool_name)}, "content": ""}}'
+                                    yield json.dumps({
+                                        "step": "tools",
+                                        "agent": agent_name,
+                                        "name": tool_name,
+                                        "content": "",
+                                    }, ensure_ascii=False)
 
                     except Exception as e:
                         custom_logger.error(f"Error processing chunk: {e}")
                         import traceback
                         custom_logger.error(traceback.format_exc())
-                        error_response = {
-                            "step": "done",
-                            "message_id": str(uuid.uuid4()),
-                            "role": "assistant",
-                            "content": "데이터 처리 중 오류가 발생했습니다.",
-                            "metadata": {},
-                            "created_at": datetime.utcnow().isoformat(),
-                            "error": str(e)
-                        }
-                        yield json.dumps(error_response, ensure_ascii=False)
+                        yield self._build_error_response(e, "데이터 처리 중 오류가 발생했습니다.")
                         break
 
                     agent_task = asyncio.create_task(agent_iterator.__anext__())
 
         except Exception as e:
             import traceback
-            error_trace = traceback.format_exc()
             custom_logger.error(f"Error in process_query: {e}")
-            custom_logger.error(error_trace)
-
-            error_content = f"처리 중 오류가 발생했습니다. 다시 시도해주세요."
-            error_metadata = {}
-
-            # 에러 응답을 스트리밍으로 전송 (HTTPException 대신)
-            error_response = {
-                "step": "done",
-                "message_id": str(uuid.uuid4()),
-                "role": "assistant",
-                "content": error_content,
-                "metadata": error_metadata,
-                "created_at": datetime.utcnow().isoformat(),
-                "error": str(e) if not isinstance(e, GraphRecursionError) else None
-            }
-            yield json.dumps(error_response, ensure_ascii=False)
+            custom_logger.error(traceback.format_exc())
+            yield self._build_error_response(e, "처리 중 오류가 발생했습니다. 다시 시도해주세요.")
 
     @log_execution
     def _handle_metadata(self, metadata) -> dict:

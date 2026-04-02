@@ -1,7 +1,6 @@
 import os
 import sqlite3
 from datetime import datetime
-from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 
@@ -14,10 +13,10 @@ TABLES = [
     "customer_basic",
     "customer_profile",
     "customer_consultation",
+    "product_master",
     "best_banker_status",
-    "banker_score_config",
     "best_banker_promotion",
-    "product_recommendation"
+    "product_recommendation",
 ]
 
 
@@ -64,13 +63,13 @@ async def get_table_data(
         c = conn.cursor()
 
         # 전체 행 수
-        c.execute(f"SELECT COUNT(*) FROM {table_name}")
+        c.execute(f'SELECT COUNT(*) FROM "{table_name}"')
         total_count = c.fetchone()[0]
 
         # 페이징 쿼리
         offset = (page - 1) * page_size
         c.execute(
-            f"SELECT * FROM {table_name} LIMIT ? OFFSET ?",
+            f'SELECT * FROM "{table_name}" LIMIT ? OFFSET ?',
             (page_size, offset)
         )
         rows = c.fetchall()
@@ -102,7 +101,7 @@ async def get_record(table_name: str, id: str):
         c = conn.cursor()
 
         # 테이블의 primary key 컬럼 찾기
-        c.execute(f"PRAGMA table_info({table_name})")
+        c.execute(f'PRAGMA table_info("{table_name}")')
         columns = c.fetchall()
         pk_column = next((col[1] for col in columns if col[5]), None)  # pk 플래그 확인
 
@@ -113,8 +112,8 @@ async def get_record(table_name: str, id: str):
         if not pk_column:
             raise HTTPException(status_code=400, detail="테이블 구조를 파악할 수 없습니다.")
 
-        # 레코드 조회
-        c.execute(f"SELECT * FROM {table_name} WHERE {pk_column} = ?", (id,))
+        # 레코드 조회 — pk_column도 allowlist(TABLES) 검증된 테이블에서 추출한 값이므로 안전
+        c.execute(f'SELECT * FROM "{table_name}" WHERE "{pk_column}" = ?', (id,))
         row = c.fetchone()
 
         if not row:
@@ -140,8 +139,10 @@ async def get_stats():
         stats = {}
 
         for table_name in TABLES:
+            if table_name not in TABLES:  # 방어적 가드 (향후 TABLES 변경 시 대비)
+                continue
             # 행 수
-            c.execute(f"SELECT COUNT(*) FROM {table_name}")
+            c.execute(f'SELECT COUNT(*) FROM "{table_name}"')
             count = c.fetchone()[0]
 
             # 마지막 업데이트 시간 (테이블이 생성된 시간으로 대체)
