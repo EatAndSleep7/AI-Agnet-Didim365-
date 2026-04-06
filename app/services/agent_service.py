@@ -124,7 +124,7 @@ class AgentService:
             _BANKING_SUB_AGENTS = {
                 "customer_agent", "regulation_agent",
                 "dashboard_agent", "recommendation_agent",
-                "simulation_agent",
+                "strategy_agent", "simulation_agent",
             }
 
             agent_iterator = agent_stream.__aiter__()
@@ -196,8 +196,15 @@ class AgentService:
 
                         else:
                             # ── 서브 에이전트 내부 이벤트 (tool 호출 과정 표시) ──
-                            # namespace 마지막 요소에서 에이전트 이름 추출 (예: "regulation_agent:uuid" → "regulation_agent")
-                            agent_name = namespace[-1].split(":")[0] if namespace else ""
+                            # namespace를 순서대로 탐색하여 _BANKING_SUB_AGENTS 에 속하는 첫 이름을 사용.
+                            # recommendation_agent처럼 내부에 sub-subgraph가 있을 때도
+                            # "path_b" 대신 "recommendation_agent"로 표시된다.
+                            agent_name = ""
+                            for ns_part in namespace:
+                                ns_base = ns_part.split(":")[0]
+                                if ns_base in _BANKING_SUB_AGENTS:
+                                    agent_name = ns_base
+                                    break
                             for step, event in update.items():
                                 if not event:
                                     continue

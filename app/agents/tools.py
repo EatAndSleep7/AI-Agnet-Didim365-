@@ -101,6 +101,7 @@ def summarize_customer(customer_id: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _retriever = None
+_es_client: Elasticsearch | None = None
 
 
 def _bm25_query(q: str) -> dict:
@@ -138,6 +139,24 @@ def _get_retriever() -> ElasticsearchRetriever:
     return _retriever
 
 
+def _get_es_client() -> Elasticsearch:
+    """ES 클라이언트 싱글턴 반환 (SSL 경고 억제)."""
+    global _es_client
+    if _es_client is None:
+        import urllib3
+        import warnings
+        from app.core.config import settings
+        es_cfg = settings.ES
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
+            _es_client = Elasticsearch(
+                es_cfg.URL,
+                basic_auth=(es_cfg.USER, es_cfg.PASSWORD),
+                verify_certs=False,
+            )
+    return _es_client
+
+
 @tool
 def search_best_banker_regulations(query: str) -> str:
     """베스트뱅커 규정집(edu-collection)에서 질문과 관련된 내용을 BM25로 검색하여 반환합니다."""
@@ -145,7 +164,34 @@ def search_best_banker_regulations(query: str) -> str:
     docs = retriever.invoke(query)
     if not docs:
         return f"'{query}'에 대한 규정집 내용을 찾을 수 없습니다."
-    parts = [f"[{i+1}] {doc.page_content[:600]}" for i, doc in enumerate(docs)]
+    parts = [f"[{i+1}] {doc.page_content[:1500]}" for i, doc in enumerate(docs)]
+    return "\n\n".join(parts)
+
+
+@tool
+def get_regulation_section(section: str, subsection: str | None = None) -> str:
+    """베스트뱅커 규정집에서 상품군(section)과 섹션 유형(subsection)으로 규정 문서를 정확히 조회합니다.
+
+    section: 수신 | 개인여신 | 기업여신 | 디지털금융
+    subsection (선택): 평가배점 | 실적산출대상 | 평점산출방식 | 득점기준 | 실적인정기준 | 실적제외대상 | 담당자
+      - 없으면 해당 section의 모든 문서 반환
+    """
+    from app.core.config import settings
+    must = [{"term": {"section": section}}]
+    if subsection:
+        must.append({"term": {"subsection": subsection}})
+    body = {
+        "query": {"bool": {"must": must}},
+        "size": 10,
+        "_source": ["section", "subsection", "content_type", "text"],
+    }
+    es = _get_es_client()
+    res = es.search(index=settings.ES.INDEX, body=body)
+    hits = res["hits"]["hits"]
+    if not hits:
+        label = f"{section} > {subsection}" if subsection else section
+        return json.dumps({"found": False, "message": f"'{label}' 규정을 찾을 수 없습니다."}, ensure_ascii=False)
+    parts = [hit["_source"].get("text", "")[:2000] for hit in hits]
     return "\n\n".join(parts)
 
 
@@ -248,9 +294,15 @@ def get_worst_group(employee_id: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @tool
-def get_top_product_for_customer(customer_id: str, category: Optional[str] = None) -> str:
-    """product_recommendation에서 추천 점수가 가장 높은 상품을 반환합니다.
-    category(수신|개인여신|기업여신|디지털금융) 지정 시 해당 카테고리 내 최고 점수 상품을 반환합니다."""
+def get_top_product_for_customer(
+    customer_id: str,
+    category: Optional[str] = None,
+    top_n: int = 1,
+) -> str:
+    """product_recommendation에서 추천 점수가 높은 상품을 최대 top_n개 반환합니다.
+    category(수신|개인여신|기업여신|디지털금융) 지정 시 해당 카테고리 내 상위 상품을 반환합니다.
+    top_n=1(기본값)이면 단일 결과 형식, top_n>1이면 results 리스트 형식으로 반환합니다."""
+    top_n = max(1, min(top_n, 10))
     conn = _conn()
     c = conn.cursor()
 
@@ -260,8 +312,8 @@ def get_top_product_for_customer(customer_id: str, category: Optional[str] = Non
             "FROM product_recommendation pr "
             "JOIN product_master pm ON pr.product_id = pm.product_id "
             "WHERE pr.customer_id = ? AND pr.category = ? "
-            "ORDER BY pr.recommend_score DESC LIMIT 1",
-            (customer_id, category),
+            "ORDER BY pr.recommend_score DESC LIMIT ?",
+            (customer_id, category, top_n),
         )
     else:
         c.execute(
@@ -269,24 +321,39 @@ def get_top_product_for_customer(customer_id: str, category: Optional[str] = Non
             "FROM product_recommendation pr "
             "JOIN product_master pm ON pr.product_id = pm.product_id "
             "WHERE pr.customer_id = ? "
-            "ORDER BY pr.recommend_score DESC LIMIT 1",
-            (customer_id,),
+            "ORDER BY pr.recommend_score DESC LIMIT ?",
+            (customer_id, top_n),
         )
 
-    row = c.fetchone()
+    rows = c.fetchall()
     conn.close()
 
-    if not row:
+    if not rows:
         return json.dumps({"found": False, "message": "해당 조건의 추천 상품이 없습니다."}, ensure_ascii=False)
 
-    return json.dumps({
-        "found": True,
-        "product_id": row["product_id"],
-        "product_name": row["product_name"],
-        "category": row["category"],
-        "sub_category": row["sub_category"],
-        "recommend_score": row["recommend_score"],
-    }, ensure_ascii=False)
+    if top_n == 1:
+        row = rows[0]
+        return json.dumps({
+            "found": True,
+            "product_id": row["product_id"],
+            "product_name": row["product_name"],
+            "category": row["category"],
+            "sub_category": row["sub_category"],
+            "recommend_score": row["recommend_score"],
+        }, ensure_ascii=False)
+
+    results = [
+        {
+            "rank": i + 1,
+            "product_id": row["product_id"],
+            "product_name": row["product_name"],
+            "category": row["category"],
+            "sub_category": row["sub_category"],
+            "recommend_score": row["recommend_score"],
+        }
+        for i, row in enumerate(rows)
+    ]
+    return json.dumps({"found": True, "count": len(results), "results": results}, ensure_ascii=False)
 
 
 @tool
@@ -305,10 +372,11 @@ def generate_marketing_message(customer_summary: str, product_name: str, product
     )
     prompt = ChatPromptTemplate.from_messages([
         ("system",
-         "당신은 은행 마케팅 전문가입니다. "
-         "고객 특성 요약과 추천 상품 정보를 바탕으로, 은행원이 고객에게 직접 말할 수 있는 "
-         "자연스럽고 설득력 있는 마케팅 문구를 2~3문장으로 작성하세요. "
-         "고객의 특성과 상품의 장점을 연결하여 개인화된 메시지를 만드세요."),
+         "당신은 은행원을 위한 영업 문구 전문가입니다. "
+         "고객 특성(실제 데이터 기반)과 상품 특성을 연결하여, 은행원이 고객에게 실제로 말할 수 있는 "
+         "담백하고 전문적인 문구를 2문장 이내로 작성하세요. "
+         "고객의 실제 특성(잔액, 상담이력, 마케팅동의 여부 등)을 반드시 근거로 사용하세요. "
+         "'맞춤형', '최적의', '완벽한' 등 근거 없는 추상적 수식어는 사용하지 마세요."),
         ("user",
          "고객 요약: {customer_summary}\n"
          "추천 상품: {product_name} ({product_group_name})\n\n"

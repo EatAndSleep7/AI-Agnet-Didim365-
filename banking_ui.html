@@ -452,10 +452,10 @@
 
       <!-- Right Context Panel -->
       <aside
-        class="w-72 bg-surface-container-low border-l border-surface-container p-5 flex flex-col gap-6 overflow-y-auto flex-shrink-0">
+        class="w-72 bg-surface-container-low border-l border-surface-container p-5 flex flex-col gap-6 overflow-hidden flex-shrink-0">
 
         <!-- Employee Info -->
-        <div>
+        <div class="flex-shrink-0">
           <p class="text-[10px] text-on-surface-variant font-bold uppercase tracking-[0.15em] mb-3">Employee Access</p>
           <div
             class="flex items-center gap-3 bg-surface-container-lowest p-3 rounded-lg border border-outline-variant/10">
@@ -470,12 +470,12 @@
         </div>
 
         <!-- Tool Trace -->
-        <div class="flex-1 min-h-0">
-          <div class="flex items-center justify-between mb-3">
+        <div class="flex-1 min-h-0 flex flex-col">
+          <div class="flex items-center justify-between mb-3 flex-shrink-0">
             <p class="text-[10px] text-on-surface-variant font-bold uppercase tracking-[0.15em]">Tool Trace</p>
             <span id="trace-status" class="text-[9px] text-outline uppercase tracking-wide">idle</span>
           </div>
-          <div id="trace-container" class="space-y-2">
+          <div id="trace-container" class="space-y-2 overflow-y-auto flex-1 min-h-0 pb-2">
             <p class="text-[11px] text-outline italic">아직 실행된 도구가 없습니다</p>
           </div>
         </div>
@@ -754,7 +754,7 @@
     }
 
     function handleKeyDown(e) {
-      if (e.key === 'Enter' && !e.shiftKey) {
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
         e.preventDefault();
         sendMessage();
       }
@@ -1021,6 +1021,7 @@
       regulation_agent:     { label: '규정 검색', icon: 'menu_book' },
       dashboard_agent:      { label: '현황 분석', icon: 'bar_chart' },
       recommendation_agent: { label: '상품 추천', icon: 'recommend' },
+      strategy_agent:       { label: '추진 전략', icon: 'military_tech' },
       simulation_agent:     { label: '득점기준', icon: 'ssid_chart' },
     };
 

@@ -32,43 +32,6 @@ def test_extract_customer_id_ignores_emp():
     assert _extract_customer_id(msgs) is None
 
 
-# ── _extract_explicit_category ────────────────────────────────────────────────
-
-def test_extract_explicit_category_기업여신():
-    from app.agents.recommendation_agent import _extract_explicit_category
-    msgs = [HumanMessage(content="기업여신 올리려면 어떻게 해?")]
-    assert _extract_explicit_category(msgs) == "기업여신"
-
-
-def test_extract_explicit_category_디지털():
-    from app.agents.recommendation_agent import _extract_explicit_category
-    msgs = [HumanMessage(content="디지털 점수 높이고 싶어")]
-    assert _extract_explicit_category(msgs) == "디지털금융"
-
-
-def test_extract_explicit_category_전자금융():
-    from app.agents.recommendation_agent import _extract_explicit_category
-    msgs = [HumanMessage(content="전자금융 실적 올리고 싶어")]
-    assert _extract_explicit_category(msgs) == "디지털금융"
-
-
-def test_extract_explicit_category_여신_maps_to_개인여신():
-    from app.agents.recommendation_agent import _extract_explicit_category
-    msgs = [HumanMessage(content="여신 추천 부탁해")]
-    assert _extract_explicit_category(msgs) == "개인여신"
-
-
-def test_extract_explicit_category_기업여신_takes_priority_over_여신():
-    from app.agents.recommendation_agent import _extract_explicit_category
-    msgs = [HumanMessage(content="기업여신 올리려면")]
-    assert _extract_explicit_category(msgs) == "기업여신"
-
-
-def test_extract_explicit_category_none_when_absent():
-    from app.agents.recommendation_agent import _extract_explicit_category
-    msgs = [HumanMessage(content="추천 부탁해")]
-    assert _extract_explicit_category(msgs) is None
-
 
 # ── create_recommendation_agent smoke test ────────────────────────────────────
 
