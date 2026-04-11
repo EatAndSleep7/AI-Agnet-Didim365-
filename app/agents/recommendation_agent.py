@@ -3,20 +3,18 @@
 
 START → classify → {ask_direction | path_a1 | path_a2} → END
 
-- classify     : Python + LLM structured output으로 라우팅 결정
+- classify     : LLM structured output으로 A1/A2/null 분류
+                 A1(고객 성향 명확) → path_a1 직행
+                 A2(부족 상품군 명확) → path_a2 직행
+                 null(의도 불명확) → ask_direction으로 되묻기
 - ask_direction: 고정 문구로 추천 방향 질문 (LLM 없음)
 - path_a1      : 고객 성향 기반 추천 (도구 3개)
 - path_a2      : 부족 상품군 기반 추천 (도구 4개)
-
-라우팅 원칙:
-- 사용자 의도 A1 → path_a1
-- 사용자 의도 A2 → path_a2
-- 의도 불명 → ask_direction (방향 질문 후 END, 다음 메시지에서 classify 재실행)
 """
 import re
 from typing import Literal
 
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.prebuilt import create_react_agent
 from langgraph.types import Command
@@ -37,6 +35,20 @@ class IntentOutput(BaseModel):
 
 
 # ── Helper functions (pure, testable) ─────────────────────────────────────────
+
+def _safe_trim(messages: list, max_count: int) -> list:
+    """마지막 max_count개를 자른 뒤, 앞쪽에 고립된 ToolMessage를 제거한다."""
+    trimmed = messages[-max_count:]
+    while trimmed and isinstance(trimmed[0], ToolMessage):
+        trimmed = trimmed[1:]
+    return trimmed
+
+
+# ask_direction 노드가 출력하는 고정 문구 — classify에서 선행 여부 판별에 사용
+_ASK_DIRECTION_CONTENT = (
+    "고객 성향 중심으로 추천할까요(1번), 아니면 직원의 부족 상품군 위주로 추천할까요(2번)?"
+)
+
 
 def _extract_customer_id(messages: list) -> str | None:
     """메시지 이력에서 CUST로 시작하는 고객번호를 가장 최근 언급된 것으로 반환."""
@@ -83,28 +95,26 @@ def create_recommendation_agent(model, checkpointer):
         messages = state["messages"]
         customer_id = _extract_customer_id(messages)
 
-        # LLM structured output으로 intent 분류 (직전 AI 질문 포함 위해 최근 4개)
-        recent = messages[-4:]
+        # 최근 메시지에서 A1/A2/null 분류
+        # — 의도가 명확하면 바로 분기, 불명확하면 ask_direction으로 되묻기
+        recent = _safe_trim(messages, 4)
         structured_model = model.with_structured_output(IntentOutput)
         result = structured_model.invoke(
             [SystemMessage(content=RECOMMEND_CLASSIFY_PROMPT)] + recent
         )
         intent = result.intent
-
         update = {"customer_id": customer_id, "intent": intent}
 
         if intent == "A1":
             return Command(goto="path_a1", update=update)
         if intent == "A2":
             return Command(goto="path_a2", update=update)
-        # intent 불명 → 방향 질문
+        # 의도 불명확 → 방향 질문
         return Command(goto="ask_direction", update=update)
 
     # ── ask_direction 노드 (고정 문구, LLM 없음) ──────────────────────────────
     def ask_direction(_state: RecommendationState) -> dict:
-        return {"messages": [AIMessage(
-            content="고객 성향 중심으로 추천할까요(1번), 아니면 직원의 부족 상품군 위주로 추천할까요(2번)?"
-        )]}
+        return {"messages": [AIMessage(content=_ASK_DIRECTION_CONTENT)]}
 
     # ── 그래프 조립 ────────────────────────────────────────────────────────────
     graph = StateGraph(RecommendationState)

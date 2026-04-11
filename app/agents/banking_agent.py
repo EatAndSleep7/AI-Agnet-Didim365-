@@ -11,13 +11,23 @@
 import re
 from typing import Literal
 
+from langchain_core.messages import ToolMessage
 from pydantic import BaseModel
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.types import Command
 
 
+def _safe_trim(messages: list, max_count: int) -> list:
+    """마지막 max_count개를 자른 뒤, 앞쪽에 고립된 ToolMessage를 제거한다."""
+    trimmed = messages[-max_count:]
+    while trimmed and isinstance(trimmed[0], ToolMessage):
+        trimmed = trimmed[1:]
+    return trimmed
+
+
 SUPERVISOR_SYSTEM_PROMPT = """당신은 뱅킹 멀티 에이전트 시스템의 슈퍼바이저입니다.
-사용자의 메시지를 분석하여 아래 6개 에이전트 중 하나를 선택하세요.
+**가장 최근 사용자 메시지**를 기준으로 아래 6개 에이전트 중 하나를 선택하세요.
+단, 직전 AI 응답이 질문("1번? 2번?" 등)인 경우 그 흐름도 함께 고려하세요.
 
 에이전트 선택 기준:
 - customer_agent    : CUST로 시작하는 고객번호가 언급되며 고객 정보 조회/요약을 요청할 때
@@ -98,7 +108,10 @@ def create_banking_agent(model, checkpointer):
                 employee_id = match.group()
                 break
 
-        messages = [SystemMessage(content=SUPERVISOR_SYSTEM_PROMPT)] + state["messages"]
+        # 라우팅은 최근 메시지(최대 6개)만 사용 — 오래된 이력의 CUST/EMP 언급으로 인한
+        # 오라우팅 방지. 직원번호 추출은 위에서 전체 이력을 이미 순회했으므로 문제 없음.
+        recent = _safe_trim(state["messages"], 6)
+        messages = [SystemMessage(content=SUPERVISOR_SYSTEM_PROMPT)] + recent
         structured_model = model.with_structured_output(RouteOutput)
         response = structured_model.invoke(messages)
         route = response.route
