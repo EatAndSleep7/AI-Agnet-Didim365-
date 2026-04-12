@@ -267,6 +267,67 @@ START → run_strategy → END
 
 ---
 
+## Tool Tracing
+
+UI 우측 패널의 **Tool Trace**는 두 레이어로 구현됩니다.
+
+### 1. SSE 이벤트 생성 — `app/services/agent_service.py`
+
+LangGraph `astream(subgraphs=True)`가 반환하는 `(namespace, update)` 튜플을 파싱합니다.
+
+- `namespace == ()` → 외부 그래프 이벤트 (supervisor 라우팅, 서브 에이전트 완료)
+- `namespace != ()` → 서브 에이전트 내부 이벤트 → Tool Trace 대상
+
+```python
+# agent_name: namespace 튜플을 순회해 _BANKING_SUB_AGENTS set에서 결정
+for ns_part in namespace:
+    if ns_part.split(":")[0] in _BANKING_SUB_AGENTS:
+        agent_name = ns_part.split(":")[0]
+        break
+
+# step="model": LLM이 도구 호출을 결정한 순간
+if step == "model" and tool_calls:
+    yield {"step": "model", "agent": agent_name, "tool_calls": ["get_banker_dashboard", ...]}
+
+# step="tools": 도구 실행 완료
+elif step == "tools":
+    yield {"step": "tools", "agent": agent_name, "name": "get_banker_dashboard", "content": ""}
+```
+
+라우팅 이벤트(`"라우팅 중"`)는 trace에서 제외되어 UI에 표시되지 않습니다.
+
+### 2. UI 렌더링 — `banking_ui.html`
+
+| SSE 이벤트 | UI 동작 |
+|---|---|
+| `step=model` (tool_calls 있음) | LLM Call 그룹 생성 |
+| `step=tools` | 해당 그룹 안에 도구 실행 항목 추가 |
+| `step=done` | 최종 응답 표시 |
+
+trace는 `localStorage`의 `banking_history[].trace` 필드에 직렬화해 저장됩니다. 대화 전환 및 새로고침 후에도 복원됩니다.
+
+### 흐름 요약
+
+```
+LangGraph astream(subgraphs=True)
+  └─ (namespace, update) 튜플
+        │
+        ▼
+  agent_service.py
+  ├─ namespace == ()  →  외부 이벤트 (라우팅·완료 처리)
+  └─ namespace != ()  →  내부 이벤트
+       ├─ step="model"  →  {"step":"model", "agent":"...", "tool_calls":[...]}
+       ├─ step="tools"  →  {"step":"tools", "agent":"...", "name":"..."}
+       └─ step="done"   →  {"step":"done", "content":"..."}
+        │
+        ▼
+  banking_ui.html (EventSource)
+  └─ traceGroups 배열 누적 → 우측 Tool Trace 패널 렌더링
+                           → localStorage에 직렬화 저장
+```
+
+---
+
 ## 세션 컨텍스트 — 직원번호 자동 주입
 
 Supervisor가 전체 대화 이력에서 `EMP\d+` 패턴으로 직원번호를 추출하고, 라우팅 대상 서브 에이전트의 state에 SystemMessage로 주입합니다.
